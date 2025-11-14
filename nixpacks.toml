@@ -1,0 +1,9 @@
+# Tell Railway/Nixpacks to install Playwright dependencies + Chromium
+[phases.setup]
+nixPkgs = ["playwright-chromium"]
+
+[phases.build]
+cmds = ["npx playwright install --with-deps chromium"]
+
+[start]
+cmd = "node index.js"
