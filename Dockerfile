@@ -1,15 +1,16 @@
-FROM mcr.microsoft.com/playwright:v1.47.1-jammy
+FROM mcr.microsoft.com/playwright:v1.56.1-jammy
 
 WORKDIR /app
 
-# Copy ONLY package.json
-COPY package.json ./
+# Copy only package.json first (better build caching)
+COPY package.json package-lock.json* ./
 
 # Install dependencies
 RUN npm install
 
-# Copy the rest of the project
+# Copy the rest of your project
 COPY . .
 
 EXPOSE 8080
+
 CMD ["node", "index.js"]
