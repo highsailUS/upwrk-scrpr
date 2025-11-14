@@ -2,10 +2,10 @@ FROM mcr.microsoft.com/playwright:v1.47.1-jammy
 
 WORKDIR /app
 
-# Copy package files
-COPY package.json package-lock.json* ./
+# Copy ONLY package.json
+COPY package.json ./
 
-# Install dependencies (Playwright already included in the base image)
+# Install dependencies
 RUN npm install
 
 # Copy the rest of the project
