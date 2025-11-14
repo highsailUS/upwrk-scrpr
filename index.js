@@ -37,7 +37,11 @@ async function getHTML(page, selector) {
 /**
  * Core scraper – loads the Upwork job page and extracts fields.
  */
-async function scrapeJob(url) {
+async function scrapeJob(jobIdRaw) {
+  // Clean invalid chars
+  const cleanId = jobIdRaw.replace(/[^A-Za-z0-9]/g, "");
+  const jobUrl = `https://www.upwork.com/jobs/~${cleanId}`;
+
   const browser = await chromium.launch({
     headless: true,
     args: ["--no-sandbox", "--disable-setuid-sandbox"],
@@ -53,29 +57,48 @@ async function scrapeJob(url) {
       "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
   });
 
-  await page.goto(url, { waitUntil: "networkidle", timeout: 45000 });
+  // ⛔ FIXED: "networkidle" is unstable on Upwork and causes 45s timeout
+  await page.goto(jobUrl, {
+    waitUntil: "domcontentloaded",
+    timeout: 45000,
+  });
 
-  // Give it a moment to render dynamic bits
-  await page.waitForTimeout(1500);
+  // Wait specifically for description (10–20 seconds)
+  try {
+    await page.waitForSelector("[data-test='job-description']", {
+      timeout: 20000,
+    });
+  } catch {
+    console.log("Warning: job description did not appear in time");
+  }
+
+  // Extra wait to stabilize dynamic elements
+  await page.waitForTimeout(800);
 
   const data = {};
 
   // TITLE & DESCRIPTION
-  data.job_title = await getText(page, "h1[data-test='job-header-title'], h1");
+  data.job_title = await getText(
+    page,
+    "h1[data-test='job-header-title'], h1"
+  );
+
   data.job_description = await getText(
     page,
     "[data-test='job-description'], section[data-test='job-description']"
   );
+
   data.job_description_html = await getHTML(
     page,
     "[data-test='job-description'], section[data-test='job-description']"
   );
 
-  // CATEGORY / SUBCATEGORY (breadcrumbs style)
+  // CATEGORY / SUBCATEGORY (breadcrumbs)
   data.category = await getText(
     page,
     "[data-test='job-features'] [data-test='job-category'], [data-test='breadcrumb'] a:nth-child(2)"
   );
+
   data.subcategory = await getText(
     page,
     "[data-test='job-features'] [data-test='job-subcategory'], [data-test='breadcrumb'] a:nth-child(3)"
@@ -84,10 +107,16 @@ async function scrapeJob(url) {
   // BUDGET / TYPE / DURATION / EXPERIENCE
   data.experience_level = await getText(page, "[data-test='experience-level']");
   data.project_length = await getText(page, "[data-test='project-length']");
-  data.hourly_range = await getText(page, "[data-test='job-type-hourly'], [data-test='budget-hourly']");
-  data.fixed_budget = await getText(page, "[data-test='job-type-fixed'], [data-test='budget-fixed']");
+  data.hourly_range = await getText(
+    page,
+    "[data-test='job-type-hourly'], [data-test='budget-hourly']"
+  );
+  data.fixed_budget = await getText(
+    page,
+    "[data-test='job-type-fixed'], [data-test='budget-fixed']"
+  );
 
-  // CLIENT INFO BLOCK
+  // CLIENT INFO
   data.client_country = await getText(page, "[data-test='client-location']");
   data.client_rating = await getText(page, "[data-test='client-feedback']");
   data.client_total_spent = await getText(page, "[data-test='client-spend']");
@@ -97,11 +126,11 @@ async function scrapeJob(url) {
     "[data-test='payment-verification-status']"
   );
 
-  // RAW HTML (optional, nice for debugging / backup)
+  // RAW HTML (optional)
   data.raw_job_html = await page.content();
 
   await browser.close();
-  return data;
+  return { jobId: cleanId, jobUrl, ...data };
 }
 
 /**
@@ -119,30 +148,22 @@ app.get("/", (req, res) => {
  */
 app.get("/scrape", async (req, res) => {
   try {
-    const { jobId, url } = req.query;
+    let { jobId, url } = req.query;
 
-    let finalJobId = jobId || null;
-
-    if (!finalJobId && url) {
+    if (!jobId && url) {
       const match = url.match(/~([A-Za-z0-9]+)/);
-      if (match) finalJobId = match[1];
+      if (match) jobId = match[1];
     }
 
-    if (!finalJobId) {
+    if (!jobId) {
       return res
         .status(400)
         .json({ error: "Provide ?jobId=... or ?url=https://www.upwork.com/jobs/~ID" });
     }
 
-    const jobUrl = `https://www.upwork.com/jobs/~${finalJobId}`;
+    const result = await scrapeJob(jobId);
+    res.json(result);
 
-    const scraped = await scrapeJob(jobUrl);
-
-    res.json({
-      job_id: finalJobId,
-      job_url: jobUrl,
-      ...scraped,
-    });
   } catch (err) {
     console.error("SCRAPE ERROR:", err);
     res.status(500).json({ error: "Scrape failed", details: String(err) });
