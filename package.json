@@ -3,15 +3,11 @@
   "version": "1.0.0",
   "main": "index.js",
   "scripts": {
-    "start": "node index.js",
-    "postinstall": "npx playwright install --with-deps chromium"
+    "start": "node index.js"
   },
   "dependencies": {
     "express": "^4.19.2",
     "cors": "^2.8.5",
-
-    "playwright": "^1.47.1",
-    "playwright-extra": "^4.3.6",
-    "playwright-extra-plugin-stealth": "^2.11.2"
+    "playwright": "^1.47.1"
   }
 }
