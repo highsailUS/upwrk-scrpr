@@ -1,6 +1,12 @@
 const express = require("express");
 const cors = require("cors");
-const { chromium } = require("playwright");
+
+// --- Playwright Extra + Stealth ---
+const { chromium: chromiumVanilla } = require("playwright");
+const playwright = require("playwright-extra");
+const stealth = require("playwright-extra-plugin-stealth")();
+
+playwright.use(stealth);
 
 const app = express();
 app.use(cors());
@@ -13,9 +19,8 @@ async function getText(page, selector) {
   try {
     const el = page.locator(selector);
     if ((await el.count()) === 0) return null;
-    const txt = await el.first().innerText();
-    return txt.trim();
-  } catch (e) {
+    return (await el.first().innerText()).trim();
+  } catch {
     return null;
   }
 }
@@ -27,62 +32,58 @@ async function getHTML(page, selector) {
   try {
     const el = page.locator(selector);
     if ((await el.count()) === 0) return null;
-    const html = await el.first().innerHTML();
-    return html.trim();
-  } catch (e) {
+    return (await el.first().innerHTML()).trim();
+  } catch {
     return null;
   }
 }
 
 /**
- * Core scraper – loads the Upwork job page and extracts fields.
+ * SCRAPE FUNCTION
+ * Uses stealth browser + stable launch config
  */
 async function scrapeJob(jobIdRaw) {
-  // Clean invalid chars
   const cleanId = jobIdRaw.replace(/[^A-Za-z0-9]/g, "");
   const jobUrl = `https://www.upwork.com/jobs/~${cleanId}`;
 
-  const browser = await chromium.launch({
+  const browser = await playwright.chromium.launch({
     headless: true,
-    args: ["--no-sandbox", "--disable-setuid-sandbox"],
+    args: [
+      "--no-sandbox",
+      "--disable-setuid-sandbox",
+      "--disable-blink-features=AutomationControlled",
+      "--disable-dev-shm-usage",
+    ],
   });
 
-  const page = await browser.newPage({
+  const context = await browser.newContext({
     viewport: { width: 1280, height: 720 },
+    userAgent:
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
   });
 
-  // Reasonable UA so we look like a normal browser
-  await page.setExtraHTTPHeaders({
-    "User-Agent":
-      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
-  });
+  const page = await context.newPage();
 
-  // ⛔ FIXED: "networkidle" is unstable on Upwork and causes 45s timeout
+  // Go to the job page safely
   await page.goto(jobUrl, {
     waitUntil: "domcontentloaded",
     timeout: 45000,
   });
 
-  // Wait specifically for description (10–20 seconds)
+  // Wait for any meaningful content
+  await page.waitForTimeout(1000);
   try {
-    await page.waitForSelector("[data-test='job-description']", {
-      timeout: 20000,
-    });
+    await page.waitForSelector("[data-test='job-description']", { timeout: 12000 });
   } catch {
-    console.log("Warning: job description did not appear in time");
+    console.log("⚠️ Description not found in time, continuing anyway.");
   }
-
-  // Extra wait to stabilize dynamic elements
-  await page.waitForTimeout(800);
 
   const data = {};
 
-  // TITLE & DESCRIPTION
-  data.job_title = await getText(
-    page,
-    "h1[data-test='job-header-title'], h1"
-  );
+  // TITLE
+  data.job_title = await getText(page, "h1[data-test='job-header-title'], h1");
 
+  // DESCRIPTION
   data.job_description = await getText(
     page,
     "[data-test='job-description'], section[data-test='job-description']"
@@ -93,7 +94,7 @@ async function scrapeJob(jobIdRaw) {
     "[data-test='job-description'], section[data-test='job-description']"
   );
 
-  // CATEGORY / SUBCATEGORY (breadcrumbs)
+  // CATEGORY / SUBCATEGORY
   data.category = await getText(
     page,
     "[data-test='job-features'] [data-test='job-category'], [data-test='breadcrumb'] a:nth-child(2)"
@@ -104,7 +105,7 @@ async function scrapeJob(jobIdRaw) {
     "[data-test='job-features'] [data-test='job-subcategory'], [data-test='breadcrumb'] a:nth-child(3)"
   );
 
-  // BUDGET / TYPE / DURATION / EXPERIENCE
+  // EXPERIENCE / LENGTH / BUDGET
   data.experience_level = await getText(page, "[data-test='experience-level']");
   data.project_length = await getText(page, "[data-test='project-length']");
   data.hourly_range = await getText(
@@ -116,7 +117,7 @@ async function scrapeJob(jobIdRaw) {
     "[data-test='job-type-fixed'], [data-test='budget-fixed']"
   );
 
-  // CLIENT INFO
+  // CLIENT DATA
   data.client_country = await getText(page, "[data-test='client-location']");
   data.client_rating = await getText(page, "[data-test='client-feedback']");
   data.client_total_spent = await getText(page, "[data-test='client-spend']");
@@ -126,25 +127,27 @@ async function scrapeJob(jobIdRaw) {
     "[data-test='payment-verification-status']"
   );
 
-  // RAW HTML (optional)
+  // RAW HTML (but now it's NORMAL HTML, not encoded garbage)
   data.raw_job_html = await page.content();
 
   await browser.close();
-  return { jobId: cleanId, jobUrl, ...data };
+
+  return {
+    job_id: cleanId,
+    job_url: jobUrl,
+    ...data,
+  };
 }
 
 /**
- * Health check
+ * HEALTH CHECK
  */
 app.get("/", (req, res) => {
-  res.json({ status: "up", message: "Upwork scraper is running" });
+  res.json({ status: "ok", message: "Upwork scraper running" });
 });
 
 /**
  * /scrape endpoint
- * Accepts:
- *   - ?jobId=XXXXXXXX
- *   - OR ?url=https://www.upwork.com/jobs/~XXXXXXXX
  */
 app.get("/scrape", async (req, res) => {
   try {
@@ -156,14 +159,13 @@ app.get("/scrape", async (req, res) => {
     }
 
     if (!jobId) {
-      return res
-        .status(400)
-        .json({ error: "Provide ?jobId=... or ?url=https://www.upwork.com/jobs/~ID" });
+      return res.status(400).json({
+        error: "Provide ?jobId=XXXX or ?url=https://www.upwork.com/jobs/~XXXX",
+      });
     }
 
-    const result = await scrapeJob(jobId);
-    res.json(result);
-
+    const scraped = await scrapeJob(jobId);
+    res.json(scraped);
   } catch (err) {
     console.error("SCRAPE ERROR:", err);
     res.status(500).json({ error: "Scrape failed", details: String(err) });
@@ -172,5 +174,5 @@ app.get("/scrape", async (req, res) => {
 
 const PORT = process.env.PORT || 8080;
 app.listen(PORT, () => {
-  console.log(`Upwork scraper listening on port ${PORT}`);
+  console.log("✅ Upwork scraper listening on " + PORT);
 });
