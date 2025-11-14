@@ -1,20 +1,15 @@
-# Use official Playwright base image with Chromium & all dependencies preinstalled
 FROM mcr.microsoft.com/playwright:v1.47.1-jammy
 
-# Set working directory
 WORKDIR /app
 
-# Copy package files first (for layer caching)
+# Copy package files
 COPY package.json package-lock.json* ./
 
-# Install dependencies
+# Install dependencies (Playwright already included in the base image)
 RUN npm install
 
-# Copy the rest of your app
+# Copy the rest of the project
 COPY . .
 
-# Expose port Railway expects
 EXPOSE 8080
-
-# Start your API
-CMD ["npm", "start"]
+CMD ["node", "index.js"]
