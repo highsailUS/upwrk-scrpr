@@ -1,0 +1,10 @@
+{
+  "build": {
+    "builder": "NIXPACKS"
+  },
+  "nixpacks": {
+    "pkgs": [
+      "playwright-chromium"
+    ]
+  }
+}
